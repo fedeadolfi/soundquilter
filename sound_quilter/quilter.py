@@ -36,6 +36,14 @@ import random
 # TODO: or...to compute similarity between borders, first average the border over time,
 #   and then compute distance using only the magnitude over frequencies vector?
 
+# TODO: estimate transition distance probability and sample from it, instead of minimizing difference in transition distance
+#   This is saying "transition to a segment that will yield a distance sampled from a probability distribution X)
+#   The transition probability matrix is estimating the probability of jumping a certain distance
+#   This can be applied to any distance metric or feature kind.
+#   E.g., to determine a next segment, draw from a probability distribution
+#       over cosine similarity (angle). Choose a segment that moves
+#       the angle as close as possible to that drawn from the distribution.
+
 # TODO: trim overlap//2 samples from both sides of the finished quilt and do fade in-out, as post-processing
 # TODO: you can provide the features or the callable
 # TODO: features computed every time per signal chunk?
@@ -94,7 +102,7 @@ class SoundQuilter():
         self._leftover_indices = None
         self._used_indices = None  # segments used
 
-        self._original_signal_segments = None  # these will be immutable once computed (tuples)
+        self._original_signal_segments = None
         self._original_signal_locations = None
 
         self._original_feature_segments = None
@@ -110,7 +118,13 @@ class SoundQuilter():
         self.confirm_attributes_available()
         self.check_attribute_consistency()
         self._compute_populate_app_attributes()
+        self.postprocess_quilt()
         return self._quilt
+
+    def postprocess_quilt(self):
+        trim_len = self.len_overlap_samples // 2
+        len_fade = int(trim_len)
+        self._quilt = fade_in_out(self._quilt[trim_len:-trim_len], len_fade)
 
     def configure(self, config_dict):
         for attr_key, attr_value in config_dict.items():
@@ -424,6 +438,13 @@ def compute_distances(arrays, arrays_2=None):
     distance_matrix = np.sum(squared_differences, axis=dims2average)
     return distance_matrix
 
+def fade_in_out(vector, len_fade):
+    win = np.hanning(len_fade * 2)
+    left_indices = slice(0, len_fade)
+    right_indices = slice(-len_fade, vector.shape[0])
+    vector[left_indices] *= win[left_indices]
+    vector[right_indices] *= win[right_indices]
+    return vector
 
 def identity_operation(array):
     return array.copy()

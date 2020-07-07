@@ -5,6 +5,8 @@ from pycochleagram.utils import play_array
 import scipy.io as spio
 
 # TODO: how to test houskeeping methods in the app
+SHOW = False
+PLAY = False
 
 # PATH_TO_REF_ARRAYS = "sound_quilter/tests/ref/"
 PATH_TO_REF_ARRAYS = "ref/"
@@ -55,10 +57,12 @@ def test_find_optimal_location():
     assert obtained_best_location == actual_best_location
 
 def test_join_segments_psola():
-    signal_size = int(2e4)
+    signal_size = int(2e4) * 7
     signal = np.random.randn(signal_size)
     len_segment = 1200
-    ordered_initial_locations = np.arange(0, signal_size, len_segment)
+    ordered_initial_locations = np.arange(
+        len_segment, signal_size - len_segment, len_segment
+        )
     window = np.load(PATH_TO_REF_ARRAYS + "window.npy")
     max_shift = 300
     len_overlap = 600
@@ -71,30 +75,25 @@ def test_join_segments_psola():
 def test_sound_quilter():
     from scipy.signal import spectrogram, resample_poly
     import soundfile as sf
+
     srate = int(2e4)
-    num_secs = 7
-    num_samples = num_secs * srate
-    # signal = np.random.randn(num_samples)
-    # path2signal = PATH_TO_REF_ARRAYS + "Laughter.wav"
-    # path2signal = "/Users/federico.adolfi/Projects/natural_sounds_db/stim387_typing.wav"
-    path2signal = "/Users/federico.adolfi/Projects/nhsong_14sec_wav/NAIV-023.wav"
-    # srate_loaded, signal = spio.wavfile.read(path2signal)
+    # num_secs = 7
+    # num_samples = num_secs * srate
+    path2signal = PATH_TO_REF_ARRAYS + "Laughter.wav"
 
     signal, srate_loaded = sf.read(path2signal, dtype="float32")
-    signal = signal.sum(axis=1) / np.abs(signal.sum(axis=1)).max()  # to mono and normalize
-
-    if srate_loaded != srate:
+    if signal.ndim > 1:  # if stereo, to mono and normalize
+        signal = signal.sum(axis=1) / np.abs(signal.sum(axis=1)).max()
+    if srate_loaded != srate:  # if different sampling rate, resample
         signal = resample_poly(signal, srate, srate_loaded, axis=0)
-
-    # freqs, times, sgram = spectrogram(signal, srate)
 
     quilter = qtr.SoundQuilter()
     config = {
         # Attributes set by the user
         "srate": srate,
-        "len_segment_samples": 1200,
+        "len_segment_samples": 600,
         "len_overlap_samples": 600,
-        "len_quilt_samples": 1200 * 30,  # int(srate * 4.0),
+        "len_quilt_samples": 2400 * 15,  # int(srate * 4.0),
         "len_border_samples": 300,  # defines the extent to use for distance calculation
         # "_distance_metric": None,  # should work with broadcasting
         # for selecting via maximizing cross-correlation (PSOLA),
@@ -105,9 +104,11 @@ def test_sound_quilter():
     quilter.register_custom_transform(lambda x: spectrogram(x, srate)[2])
     quilt = quilter.make_quilt()
 
-    plt.plot(quilt)
+    assert quilt.shape[0] == config["len_quilt_samples"]
 
-    # play_array(quilt, srate, rescale="normalize", ignore_warning=True)
-    # play_array(signal, srate, rescale="normalize", ignore_warning=True)
+    if SHOW:
+        plt.plot(quilt)
+    if PLAY:
+        play_array(quilt, srate, rescale="normalize", ignore_warning=True)
+        # play_array(signal, srate, rescale="normalize", ignore_warning=True)
 
-    # assert quilt.shape[0] == config["len_quilt_samples"]  # TODO: what to do about extremes

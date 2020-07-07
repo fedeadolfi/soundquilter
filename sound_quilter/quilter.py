@@ -27,21 +27,41 @@ import random
 #           maximize cross-correlation between the *waveforms* of adjacent segments
 #       - Cross-fade between segments using 30-ms raised cosine ramps centered at boundary
 
+# TODO: in order to make feature computation generalizable, the border could be handled by
+#   the feature transform (lambda x: spectrogram(x[0:border_length], srate)[2],
+#   then features are just vectors of any length and distances are based on those
+# TODO: if not...need to keep track or standardize what axis of the feature array corresponds to time
+# TODO: len border samples applies to the feature representation which may have a different sampling rate
+#   the concept of border may even be obsolete in a feature space with time-averaging
+# TODO: or...to compute similarity between borders, first average the border over time,
+#   and then compute distance using only the magnitude over frequencies vector?
+
+# TODO: trim overlap//2 samples from both sides of the finished quilt and do fade in-out, as post-processing
 # TODO: you can provide the features or the callable
 # TODO: features computed every time per signal chunk?
 #   this way the sampling rate of the features is not an issue and can accomodate any representation
 #   Instead of splitting a pre-computed feature array of the whole signal,
 #   compute a feature arrays once the signal has been split into segments
 # TODO: consider adding dynamic range compression
-# TODO: implement attribute consistency checks
 # TODO: add ability to sample segments from signal *with replacement*
 #   ...this way one can build quilts that are longer than the source signal
 # TODO: add ability to reverse or shuffle within-segment samples
+# TODO: add ability to order quilt segments randomly
+# TODO: check that a custom transform is available
+# TODO: if no custom transform, pass a spectrogram or define something with signal
+# TODO: add ability to configure app with units of seconds
+# TODO: what if the feature representation is computed with overlapping windows?
+#   ...then it has to be computed over the whole signal first? (instead of the chunks)
+# TODO: distance metric; cosine vs euclidean vs...(https://cmry.github.io/notes/euclidean-v-cosine)
+# TODO: test attribute checks
+# TODO: detrend each segment?
+# TODO: check initial trimming of the signal is not redundant with buffer for overlap candidates
 
 class SoundQuilter():
     def __init__(self):
         # Attributes set by the user
         self.srate = None
+        self.sample_with_replacement = False  # TODO: need to implement this functionality
 
         # self.len_segment_secs = None
         self.len_segment_samples = None
@@ -55,8 +75,8 @@ class SoundQuilter():
         self.len_border_samples = None  # defines the extent to use for distance calculation
         # self.len_border_secs = None
 
-        # Assigned via register_custom_transform()
-        self._feature_transform = identity_operation  # identity or function that transforms the signal into features
+        # Assigned via register_custom_transform(). Last axis of feature array should be time.
+        self._feature_transform = None  # identity or function that transforms the signal into features
 
         # a callable that computes some kind of distance like L2
         self._distance_metric = None  # should work with broadcasting
@@ -87,6 +107,8 @@ class SoundQuilter():
         self._quilt = None  # should not be assigned by user
 
     def make_quilt(self):
+        self.confirm_attributes_available()
+        self.check_attribute_consistency()
         self._compute_populate_app_attributes()
         return self._quilt
 
@@ -125,16 +147,60 @@ class SoundQuilter():
                 )
 
     def check_attribute_consistency(self):
-        # TODO: if "custom" feature space, there should be a custom transform
-        # TODO: if no custom transform, pass a spectrogram or define something with signal
-        # TODO: len border samples should be <= than segment len in the relevant feature repr.
-        # TODO: overlap should be smaller than border (which is used for similarity ordering)
-        # TODO: signal length needs to accomodate an overlap len on each side without use
-        # TODO: to pass a feature representation, it has to be at the same sampling rate...
-        pass
+        # TODO: check that signal is only one channel
+        error_strings = []
+        warning_strings = []
+        # Errors
+        if self.len_border_samples > self.len_segment_samples//2:
+            # TODO: but this should be in the feature representation sampling rate
+            error_strings.append(
+                f"Length of border should be less than or equal to half of the segment length. "
+                f"Got border={self.len_border_samples} and segment={self.len_segment_samples}.\n"
+                )
+        if (
+            (len(self.signal) - self.len_overlap_samples < self.len_quilt_samples)
+            and not self.sample_with_replacement
+            ):
+            error_strings.append(
+                f"Requested quilt length ({self.len_quilt_samples}) is longer than "
+                f"usable part of source signal ({len(self.signal) - self.len_overlap_samples}). "
+                f"This is only possible if sampling from source with replacement is enabled.\n"
+                )
+        if self.max_shift_samples > self.len_segment_samples//2:
+            error_strings.append(
+                f"Maximum shift used for generating overlap candidates ({self.max_shift_samples}) "
+                f"cannot be greater than half of the segment length ({self.len_segment_samples}).\n"
+                )
+        if self.len_overlap_samples > self.len_segment_samples:
+            error_strings.append(
+                f"Overlap length ({self.len_overlap_samples}) cannot be greater"
+                f"than segment length ({self.len_segment_samples}).\n"
+                )
+        # Warnings
+        remainder_quilt_len = self.len_quilt_samples % self.len_segment_samples
+        if  remainder_quilt_len != 0:
+            warning_strings.append(
+                f"Length of quilt requested ({self.len_quilt_samples}) is not divisible by "
+                f"length of segments ({self.len_segment_samples}). "
+                f"Length of quilt will be {self.len_segment_samples - remainder_quilt_len} "
+                f"samples longer than requested.\n"
+                )
+
+        # Warn and raise error
+        if len(warning_strings) > 0:
+            warnings.warn(UserWarning(
+                f"Found possibly undesired consequences of the configuration values: \n"
+                f"".join(warning_strings)
+                ))
+        if len(error_strings) > 0:
+            raise ValueError(
+                f"Found {len(error_strings)} errors or inconsistencies in configuration values. " +
+                f"See the following descriptions and adjust configuration accordingly:\n" +
+                f"".join(error_strings)
+                )
+
 
     def _compute_populate_app_attributes(self):
-        self.confirm_attributes_available()
         self._window_segment = self._build_window_segment()
         self._num_quilt_segments = self._compute_num_quilt_segments()
         # TODO: decide how to handle feature computation for whole signal if at all
@@ -195,6 +261,7 @@ class SoundQuilter():
         # (segment_nr, segment_nr) diagonal in distance matrix has original transition distance
         #   for segment `segment_nr`.
 
+        # TODO: last axis in feature array is assumed to be time. Need to enforce this.
         right_borders = self._original_feature_segments[0:-1:1, :, -self.len_border_samples:]
         left_borders = self._original_feature_segments[1::1, :, 0:self.len_border_samples]
         return compute_distances(right_borders, left_borders)
@@ -224,7 +291,7 @@ def join_segments_psola(
         ):
 
     def overlap_add(segments, len_overlap, window):  # todo: put this function outside
-        joined_segments = segments[0] * window
+        joined_segments = segments[0] * window  # init quilt
         for idx, chunk in enumerate(segments[1:]):
             pad = np.zeros(chunk.shape[0] - len_overlap)
             joined_segments = np.concatenate([joined_segments, pad])  # zero pad
@@ -350,7 +417,8 @@ def compute_distances(arrays, arrays_2=None):
                 f"Arrays in both sets should be the same shape. "
                 f"Got {arrays.shape} and {arrays_2.shape}"
                 )
-
+    # TODO: flatten feature array before computing distance?
+    #  (more generalizable to various distance measures and feature shapes)
     squared_differences = np.power(arrays[..., np.newaxis] - np.moveaxis(arrays_2, 0, -1), 2)
     dims2average = tuple(range(1, squared_differences.ndim-1))  # only dims of the representation array
     distance_matrix = np.sum(squared_differences, axis=dims2average)
@@ -360,8 +428,11 @@ def compute_distances(arrays, arrays_2=None):
 def identity_operation(array):
     return array.copy()
 
-# TODO: function that checks whether desired quilt and segment length are possible values
+def cosine_similarity(x, y):
+    return np.dot(x, y) / (np.sqrt(np.dot(x, x)) * np.sqrt(np.dot(y, y)))
 
+def euclidean_distance(x, y):
+    return np.sqrt(np.sum((x - y) ** 2))
 
 
 

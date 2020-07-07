@@ -29,12 +29,14 @@ import random
 
 # TODO: in order to make feature computation generalizable, the border could be handled by
 #   the feature transform (lambda x: spectrogram(x[0:border_length], srate)[2],
-#   then features are just vectors of any length and distances are based on those
+#   then features are just vectors of any length and distances are based on those.
+#   Need to make the distance function accept any kind of custom distance and operate on vectors.
 # TODO: if not...need to keep track or standardize what axis of the feature array corresponds to time
 # TODO: len border samples applies to the feature representation which may have a different sampling rate
 #   the concept of border may even be obsolete in a feature space with time-averaging
 # TODO: or...to compute similarity between borders, first average the border over time,
 #   and then compute distance using only the magnitude over frequencies vector?
+# TODO: better option: change what is submitted to `project to feature space`
 
 # TODO: estimate transition distance probability and sample from it, instead of minimizing difference in transition distance
 #   This is saying "transition to a segment that will yield a distance sampled from a probability distribution X)
@@ -44,26 +46,25 @@ import random
 #       over cosine similarity (angle). Choose a segment that moves
 #       the angle as close as possible to that drawn from the distribution.
 
-# TODO: trim overlap//2 samples from both sides of the finished quilt and do fade in-out, as post-processing
 # TODO: you can provide the features or the callable
-# TODO: features computed every time per signal chunk?
-#   this way the sampling rate of the features is not an issue and can accomodate any representation
-#   Instead of splitting a pre-computed feature array of the whole signal,
-#   compute a feature arrays once the signal has been split into segments
+# TODO: features are being computed per signal chunk. Add ability to compute as a whole?
 # TODO: consider adding dynamic range compression
+
 # TODO: add ability to sample segments from signal *with replacement*
 #   ...this way one can build quilts that are longer than the source signal
 # TODO: add ability to reverse or shuffle within-segment samples
 # TODO: add ability to order quilt segments randomly
+
 # TODO: check that a custom transform is available
 # TODO: if no custom transform, pass a spectrogram or define something with signal
 # TODO: add ability to configure app with units of seconds
 # TODO: what if the feature representation is computed with overlapping windows?
 #   ...then it has to be computed over the whole signal first? (instead of the chunks)
-# TODO: distance metric; cosine vs euclidean vs...(https://cmry.github.io/notes/euclidean-v-cosine)
 # TODO: test attribute checks
 # TODO: detrend each segment?
 # TODO: check initial trimming of the signal is not redundant with buffer for overlap candidates
+# TODO: function that checks wheather feature border len is less than the actual feature shape
+# TODO: plot trajectories to see if there is a difference between ordering or not
 
 class SoundQuilter():
     def __init__(self):
@@ -80,14 +81,14 @@ class SoundQuilter():
         self.len_quilt_samples = None
         self._num_quilt_segments = None
 
-        self.len_border_samples = None  # defines the extent to use for distance calculation
+        self.len_feature_border_samples = None  # defines the extent to use for distance calculation
         # self.len_border_secs = None
 
         # Assigned via register_custom_transform(). Last axis of feature array should be time.
         self._feature_transform = None  # identity or function that transforms the signal into features
 
         # a callable that computes some kind of distance like L2
-        self._distance_metric = None  # should work with broadcasting
+        self.distance_metric = None  # should work with broadcasting
 
         # for selecting via maximizing cross-correlation (PSOLA)
         # self.max_shift_secs = None
@@ -149,10 +150,11 @@ class SoundQuilter():
         self._feature_repr = representation
 
     def confirm_attributes_available(self):
+        optional_attributes = ["len_feature_border_samples"]  # TODO: add more
         empty_attributes = []
         for attr_key, attr_val in vars(self).items():
             # only check existence of attributes assigned by the user
-            if attr_key[0] != "_" and attr_val is None:
+            if attr_key[0] != "_" and attr_key not in optional_attributes and attr_val is None:
                 empty_attributes.append(attr_key)
         if len(empty_attributes) > 0:
             raise Exception(
@@ -164,13 +166,14 @@ class SoundQuilter():
         # TODO: check that signal is only one channel
         error_strings = []
         warning_strings = []
-        # Errors
-        if self.len_border_samples > self.len_segment_samples//2:
-            # TODO: but this should be in the feature representation sampling rate
-            error_strings.append(
-                f"Length of border should be less than or equal to half of the segment length. "
-                f"Got border={self.len_border_samples} and segment={self.len_segment_samples}.\n"
-                )
+        # Collect errors
+        if self.len_feature_border_samples is not None:
+            if self.len_feature_border_samples > self.len_segment_samples//2:
+                # TODO: but this should be in the feature representation sampling rate
+                error_strings.append(
+                    f"Length of border should be less than or equal to half of the segment length. "
+                    f"Got border={self.len_feature_border_samples} and segment={self.len_segment_samples}.\n"
+                    )
         if (
             (len(self.signal) - self.len_overlap_samples < self.len_quilt_samples)
             and not self.sample_with_replacement
@@ -190,7 +193,7 @@ class SoundQuilter():
                 f"Overlap length ({self.len_overlap_samples}) cannot be greater"
                 f"than segment length ({self.len_segment_samples}).\n"
                 )
-        # Warnings
+        # Collect warnings
         remainder_quilt_len = self.len_quilt_samples % self.len_segment_samples
         if  remainder_quilt_len != 0:
             warning_strings.append(
@@ -200,7 +203,7 @@ class SoundQuilter():
                 f"samples longer than requested.\n"
                 )
 
-        # Warn and raise error
+        # Warn and/or raise
         if len(warning_strings) > 0:
             warnings.warn(UserWarning(
                 f"Found possibly undesired consequences of the configuration values: \n"
@@ -225,7 +228,7 @@ class SoundQuilter():
          self._original_signal_segments) = self._make_locations_segments_with_buffer()
         self._original_feature_segments = self._make_features_from_signal_segments()
 
-        self._distance_matrix = self._build_border_distance_matrix()
+        self._distance_matrix = self._build_distance_matrix()
         self._ordered_segments_indices = self._build_index_sequence_similar_distance()
         # TODO: with ordered signal locations and ordered segment indices we can move on to PSOLA
         self._quilt = self._pitch_synchronous_overlap_add()
@@ -265,20 +268,36 @@ class SoundQuilter():
             feature_segments.append(features)
         return np.concatenate(feature_segments, axis=0)  # (num_subarrays, *feature.shape)
 
-    def _build_border_distance_matrix(self):
-        """Will compute the distance matrix independent of the input representation shape."""
+    def _build_distance_matrix(self):
+        """
+        Will compute the distance matrix independent of the input representation shape.
+        (segment_nr, segment_nr) diagonal in distance matrix has original transition distance
+        for segment `segment_nr`.
+        """
         # need to first extract borders from arrays in order to compute distances based on those
-        # borders may include the whole segment or just an edge of it
-        # todo: features can be downsampled from original, so feature samples may be different
         # Right border for last segment is not included because it doesn't have a "next segment"
         #   this works if number of segments is even and also if it is odd
-        # (segment_nr, segment_nr) diagonal in distance matrix has original transition distance
-        #   for segment `segment_nr`.
 
         # TODO: last axis in feature array is assumed to be time. Need to enforce this.
-        right_borders = self._original_feature_segments[0:-1:1, :, -self.len_border_samples:]
-        left_borders = self._original_feature_segments[1::1, :, 0:self.len_border_samples]
-        return compute_distances(right_borders, left_borders)
+        set_A = slice(0, -1, 1)  # segments from the first to next to last
+        set_B = slice(1, self._original_feature_segments.shape[0], 1)  # from second to last
+
+        if self.len_feature_border_samples is not None:
+            right_border_idx = slice(
+                -self.len_feature_border_samples,
+                self._original_feature_segments.shape[-1]
+                )
+            left_border_idx = slice(0, self.len_feature_border_samples)
+            feature_segments_A = self._original_feature_segments[set_A, ..., right_border_idx]
+            feature_segments_B = self._original_feature_segments[set_B, ..., left_border_idx]
+        else:
+            feature_segments_A = self._original_feature_segments[set_A, ...]
+            feature_segments_B = self._original_feature_segments[set_B, ...]
+
+        return compute_distances(
+            feature_segments_A, feature_segments_B,
+            metric=self.distance_metric
+            )
 
     def _project_onto_feature_space(self):
         return self.feature_transform(self.signal)
@@ -408,14 +427,36 @@ def split_array(array, len_subarrays):
     return np.array(segments)
 
 
-def compute_distances(arrays, arrays_2=None):
-    """Computes all pair-wise L2 distances between arrays of any size.
+def compute_distances(arrays, arrays_2=None, metric="sqerror"):
+    """Computes all pair-wise distances between arrays of any size.
     First dimension indexes array number. The rest are the array shape.
     Returns a 2D distance matrix of shape (num_arrays, num_arrays)
     with num_arrays = arrays.shape[0].
     If arrays_2 is passed, pairwise distances are between the vectors in arrays and arrays_2.
     """
     # TODO: make it work with custom distance metric (a callable passed as argument)
+    metrics_options = {
+        "euclidean": euclidean_distance_matrix,
+        "cosine": cosine_similarity_matrix,
+        "sqerror": squared_error_matrix,
+        }
+    if type(metric) is str:
+        if metric not in metrics_options.keys():
+            raise NotImplementedError(
+                f"Metric option '{metric}' not implemented. "
+                f"Available metrics are: {metrics_options.keys()}.\n"
+                f"You can also pass a custom metric as a callable."
+                )
+        else:
+            fx = metrics_options[metric]
+    elif callable(metric):
+        fx = metric
+    else:
+        raise TypeError(
+            f"`metric` should be of type string indicating distance measure "
+            f"or a callable implementing a custom distance computation. "
+            f"Got type {type(metric)}"
+            )
 
     if arrays_2 is None:
         if arrays.ndim < 2 or (arrays.ndim > 1 and arrays.shape[0] < 2):
@@ -431,11 +472,16 @@ def compute_distances(arrays, arrays_2=None):
                 f"Arrays in both sets should be the same shape. "
                 f"Got {arrays.shape} and {arrays_2.shape}"
                 )
-    # TODO: flatten feature array before computing distance?
-    #  (more generalizable to various distance measures and feature shapes)
-    squared_differences = np.power(arrays[..., np.newaxis] - np.moveaxis(arrays_2, 0, -1), 2)
-    dims2average = tuple(range(1, squared_differences.ndim-1))  # only dims of the representation array
-    distance_matrix = np.sum(squared_differences, axis=dims2average)
+
+    # Flatten feature arrays
+    new_shape = (arrays.shape[0], -1)
+    arrays, arrays_2 = arrays.reshape(new_shape), arrays_2.reshape(new_shape)
+
+    # squared_differences = np.power(arrays[..., np.newaxis] - np.moveaxis(arrays_2, 0, -1), 2)
+    # dims2average = tuple(range(1, squared_differences.ndim-1))  # only dims of the representation array
+    # distance_matrix = np.sum(squared_differences, axis=dims2average)
+
+    distance_matrix = fx(arrays, arrays_2)
     return distance_matrix
 
 def fade_in_out(vector, len_fade):
@@ -449,11 +495,17 @@ def fade_in_out(vector, len_fade):
 def identity_operation(array):
     return array.copy()
 
-def cosine_similarity(x, y):
-    return np.dot(x, y) / (np.sqrt(np.dot(x, x)) * np.sqrt(np.dot(y, y)))
+def cosine_similarity_matrix(x, y):
+    return np.divide(
+        np.dot(x, y.T),
+        np.sqrt(np.dot(x, x.T)) * np.sqrt(np.dot(y, y.T))
+        )
 
-def euclidean_distance(x, y):
-    return np.sqrt(np.sum((x - y) ** 2))
+def euclidean_distance_matrix(x, y):
+    return np.sqrt(np.sum((x[..., np.newaxis] - y.T) ** 2, axis=1))
+
+def squared_error_matrix(x, y):
+    return np.sum((x[..., np.newaxis] - y.T) ** 2, axis=1)
 
 
 

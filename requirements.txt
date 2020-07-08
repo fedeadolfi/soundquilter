@@ -1,0 +1,8 @@
+numpy
+soundfile
+pytest
+scipy
+
+# matplotlib
+# -e git+https://github.com/fedeadolfi/audioviz.git@487b1cab577861a2f38991ee2a611d2b5e364b35#egg=audioviz
+# -e git+https://github.com/fedeadolfi/TFaudition.git@aa4c1a68619ed4ee4868fb0dda4fb79cd59c70dc#egg=pycochleagram&subdirectory=pycochleagram-master

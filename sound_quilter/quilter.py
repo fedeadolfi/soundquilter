@@ -1,7 +1,5 @@
 import numpy as np
-import scipy.signal as sps
 import warnings
-import random
 
 # The purpose of this module is to implement existing methods in a generalized way
 #   and add new features made possible by the genralization.
@@ -26,6 +24,15 @@ import random
 #       - Shift boundaries of the segment forward or backwards at most 15 ms to
 #           maximize cross-correlation between the *waveforms* of adjacent segments
 #       - Cross-fade between segments using 30-ms raised cosine ramps centered at boundary
+
+# TODO: test_sound_quilter is a smoke test, not a unit test. If I run it alongside
+#   all the other tests, it will give 100% coverage because it is running
+#   a lot of lines in the module, but it is not testing all of them specifically
+
+# TODO: function that chooses a segment order should be a generic "selector".
+#   Then selection based on minimizing the difference in transition distance is
+#       just a special case. This could accomodate selecting by, for example,
+#       maximizing distance, or other selection criteria.
 
 # TODO: in order to make feature computation generalizable, the border could be handled by
 #   the feature transform (lambda x: spectrogram(x[0:border_length], srate)[2],
@@ -81,11 +88,11 @@ class SoundQuilter():
         self.len_quilt_samples = None
         self._num_quilt_segments = None
 
-        self.len_feature_border_samples = None  # defines the extent to use for distance calculation
+        self.len_feature_border_samples = None  # extent to use for distance calculation
         # self.len_border_secs = None
 
-        # Assigned via register_custom_transform(). Last axis of feature array should be time.
-        self._feature_transform = None  # identity or function that transforms the signal into features
+        # Assigned via register_custom_transform().
+        self._feature_transform = None
 
         # a callable that computes some kind of distance like L2
         self.distance_metric = None  # should work with broadcasting
@@ -99,9 +106,6 @@ class SoundQuilter():
 
         # Attributes NOT set by the user
         self._window_segment = None
-        self._leftover_segments = None  # these keep changing a global state
-        self._leftover_indices = None
-        self._used_indices = None  # segments used
 
         self._original_signal_segments = None
         self._original_signal_locations = None
@@ -113,7 +117,7 @@ class SoundQuilter():
 
         self._ordered_segments_indices = None
 
-        self._quilt = None  # should not be assigned by user
+        self._quilt = None
 
     def make_quilt(self):
         self.confirm_attributes_available()
@@ -163,10 +167,15 @@ class SoundQuilter():
                 )
 
     def check_attribute_consistency(self):
-        # TODO: check that signal is only one channel
+        # TODO: make these checks as separate functions for each thing being checked?
         error_strings = []
         warning_strings = []
         # Collect errors
+        if self.signal.ndim > 1:
+            error_strings.append(
+                f"Signal should be a vector of shape=(num_samples,). "
+                f"Got shape={self.signal.shape}."
+                )
         if self.len_feature_border_samples is not None:
             if self.len_feature_border_samples > self.len_segment_samples//2:
                 # TODO: but this should be in the feature representation sampling rate
@@ -216,10 +225,10 @@ class SoundQuilter():
                 f"".join(error_strings)
                 )
 
-
     def _compute_populate_app_attributes(self):
         self._window_segment = self._build_window_segment()
         self._num_quilt_segments = self._compute_num_quilt_segments()
+
         # TODO: decide how to handle feature computation for whole signal if at all
         # self._feature_repr = self._project_onto_feature_space()
 
@@ -230,7 +239,6 @@ class SoundQuilter():
 
         self._distance_matrix = self._build_distance_matrix()
         self._ordered_segments_indices = self._build_index_sequence_similar_distance()
-        # TODO: with ordered signal locations and ordered segment indices we can move on to PSOLA
         self._quilt = self._pitch_synchronous_overlap_add()
 
     def _pitch_synchronous_overlap_add(self):
@@ -300,7 +308,7 @@ class SoundQuilter():
             )
 
     def _project_onto_feature_space(self):
-        return self.feature_transform(self.signal)
+        return self._feature_transform(self.signal)
 
     def _build_index_sequence_similar_distance(self):
         # makes a sequence of segment indices based on maintaining
@@ -311,10 +319,17 @@ class SoundQuilter():
         return sequence
 
     def _compute_num_quilt_segments(self):
-        # TODO: treat len as min or max, or enforce consistency somehow?
-        # TODO: add a compute_derivate_attributes (those that are computed from user-defined ones)
-        # rounds down
+        # rounds up (a warning will be raised if it overflows requested segment length)
         return int(np.ceil(self.len_quilt_samples / self.len_segment_samples))
+
+
+def overlap_add(segments, len_overlap, window):
+    joined_segments = segments[0] * window  # init quilt
+    for idx, chunk in enumerate(segments[1:]):
+        pad = np.zeros(chunk.shape[0] - len_overlap)
+        joined_segments = np.concatenate([joined_segments, pad])  # zero pad
+        joined_segments[-chunk.shape[0]:] += chunk * window
+    return joined_segments
 
 
 def join_segments_psola(
@@ -322,14 +337,6 @@ def join_segments_psola(
         window, max_shift,
         len_segment, len_overlap
         ):
-
-    def overlap_add(segments, len_overlap, window):  # todo: put this function outside
-        joined_segments = segments[0] * window  # init quilt
-        for idx, chunk in enumerate(segments[1:]):
-            pad = np.zeros(chunk.shape[0] - len_overlap)
-            joined_segments = np.concatenate([joined_segments, pad])  # zero pad
-            joined_segments[-chunk.shape[0]:] += chunk * window
-        return joined_segments
 
     window_indices = np.arange(0, window.shape[0]) - len_overlap//2  # centered at half the first ramp
     first_loc = ordered_initial_locations[0]
@@ -374,7 +381,6 @@ def find_sequence_similar_diagonal(distance_matrix, len_sequence):
     appearing in the diagonal of the distance matrix.
     Expect a distance matrix representing the transitions between elements of 2 arrays.
     """
-    # TODO: check that distance matrix indices can be interpreted as (right_border_nr, left_border_nr)
     indices = np.arange(0, distance_matrix.shape[0])
     choice = np.random.choice(indices, size=1)[0]  # choose randomly only first time
     index_sequence = [choice]
@@ -391,7 +397,7 @@ def find_sequence_similar_diagonal(distance_matrix, len_sequence):
         index_sequence.append(choice)
 
     # choice is (index that minimizes distance) + 1 because distance 0 is among 0 and 1
-    return np.array(index_sequence)  # TODO: add 1 here to reflect index of segment rather than transition
+    return np.array(index_sequence)
 
 
 def make_window(len_sides, len_middle):
@@ -404,6 +410,7 @@ def make_window(len_sides, len_middle):
     right_hann = hann[len_sides:]
     window = np.concatenate([left_hann, middle, right_hann])
     return window
+
 
 def split_array(array, len_subarrays):
     """
@@ -434,7 +441,6 @@ def compute_distances(arrays, arrays_2=None, metric="sqerror"):
     with num_arrays = arrays.shape[0].
     If arrays_2 is passed, pairwise distances are between the vectors in arrays and arrays_2.
     """
-    # TODO: make it work with custom distance metric (a callable passed as argument)
     metrics_options = {
         "euclidean": euclidean_distance_matrix,
         "cosine": cosine_similarity_matrix,
@@ -477,12 +483,9 @@ def compute_distances(arrays, arrays_2=None, metric="sqerror"):
     new_shape = (arrays.shape[0], -1)
     arrays, arrays_2 = arrays.reshape(new_shape), arrays_2.reshape(new_shape)
 
-    # squared_differences = np.power(arrays[..., np.newaxis] - np.moveaxis(arrays_2, 0, -1), 2)
-    # dims2average = tuple(range(1, squared_differences.ndim-1))  # only dims of the representation array
-    # distance_matrix = np.sum(squared_differences, axis=dims2average)
-
     distance_matrix = fx(arrays, arrays_2)
     return distance_matrix
+
 
 def fade_in_out(vector, len_fade):
     win = np.hanning(len_fade * 2)
@@ -492,8 +495,10 @@ def fade_in_out(vector, len_fade):
     vector[right_indices] *= win[right_indices]
     return vector
 
+
 def identity_operation(array):
     return array.copy()
+
 
 def cosine_similarity_matrix(x, y):
     return np.divide(
@@ -501,8 +506,10 @@ def cosine_similarity_matrix(x, y):
         np.sqrt(np.dot(x, x.T)) * np.sqrt(np.dot(y, y.T))
         )
 
+
 def euclidean_distance_matrix(x, y):
     return np.sqrt(np.sum((x[..., np.newaxis] - y.T) ** 2, axis=1))
+
 
 def squared_error_matrix(x, y):
     return np.sum((x[..., np.newaxis] - y.T) ** 2, axis=1)

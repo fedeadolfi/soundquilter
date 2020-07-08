@@ -1,8 +1,6 @@
 import numpy as np
 from sound_quilter import quilter as qtr
-from matplotlib import pyplot as plt
-from pycochleagram.utils import play_array
-import scipy.io as spio
+import pytest
 
 # TODO: how to test houskeeping methods in the app
 SHOW = False
@@ -49,6 +47,7 @@ def test_find_sequence_similar_diagonal():
     index_sequence = qtr.find_sequence_similar_diagonal(distance_matrix, len_sequence)
     assert index_sequence.shape[0] == len_sequence
 
+
 def test_find_optimal_location():
     vector = np.sin(2*np.pi * np.linspace(0, 1, 10))
     candidates = np.random.randn(100) * 0.3  # small amplitude noise
@@ -56,6 +55,7 @@ def test_find_optimal_location():
     candidates[actual_best_location:30] = vector  # simulate a region where it should yield highest correlation
     obtained_best_location = qtr.find_optimal_location(vector, candidates)
     assert obtained_best_location == actual_best_location
+
 
 def test_join_segments_psola():
     signal_size = int(2e4) * 7
@@ -73,6 +73,8 @@ def test_join_segments_psola():
         len_segment, len_overlap
         )
 
+
+@pytest.mark.smoke
 def test_sound_quilter():
     from scipy.signal import spectrogram, resample_poly
     import soundfile as sf
@@ -109,8 +111,10 @@ def test_sound_quilter():
     assert quilt.shape[0] == config["len_quilt_samples"]
 
     if SHOW:
+        from matplotlib import pyplot as plt
         plt.plot(quilt)
     if PLAY:
+        from pycochleagram.utils import play_array
         play_array(quilt, srate, rescale="normalize", ignore_warning=True)
         # play_array(signal, srate, rescale="normalize", ignore_warning=True)
 

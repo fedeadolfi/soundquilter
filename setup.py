@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="sound_quilter",
+    name="soundquilter",
     version="0.1",
     author="Federico Adolfi",
     author_email="fedeadolfi@gmail.com",

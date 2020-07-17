@@ -176,6 +176,16 @@ class SoundQuilter():
                 f"Signal should be a vector of shape=(num_samples,). "
                 f"Got shape={self.signal.shape}."
                 )
+        # determine usable length and raise error if fewer than 2 segments fit
+        remainder = (self.signal.shape[0] - 2 * self.len_overlap_samples) % self.len_segment_samples
+        buffer = remainder + 2 * self.len_overlap_samples
+        usable_length_signal = self.signal.shape[0] - buffer
+        num_segments_fit = usable_length_signal / self.len_segment_samples
+        if num_segments_fit < 2:
+            error_strings.append(
+                f"Either source signal is too short (allows fewer than 2 segments of chosen length)"
+                f" or segment length is too long.\n"
+                )
         if self.len_feature_border_samples is not None:
             if self.len_feature_border_samples > self.len_segment_samples//2:
                 # TODO: but this should be in the feature representation sampling rate
@@ -184,12 +194,12 @@ class SoundQuilter():
                     f"Got border={self.len_feature_border_samples} and segment={self.len_segment_samples}.\n"
                     )
         if (
-            (len(self.signal) - self.len_overlap_samples < self.len_quilt_samples)
+            (usable_length_signal < self.len_quilt_samples)
             and not self.sample_with_replacement
             ):
             error_strings.append(
                 f"Requested quilt length ({self.len_quilt_samples}) is longer than "
-                f"usable part of source signal ({len(self.signal) - self.len_overlap_samples}). "
+                f"usable part of source signal ({usable_length_signal}). "
                 f"This is only possible if sampling from source with replacement is enabled.\n"
                 )
         if self.max_shift_samples > self.len_segment_samples//2:
@@ -241,6 +251,7 @@ class SoundQuilter():
         self._ordered_segments_indices = self._build_index_sequence_similar_distance()
         self._quilt = self._pitch_synchronous_overlap_add()
 
+
     def _pitch_synchronous_overlap_add(self):
         ordered_signal_locations = self._original_signal_locations[self._ordered_segments_indices]
         return join_segments_psola(
@@ -255,19 +266,32 @@ class SoundQuilter():
         return make_window(len_sides, len_middle)
 
     def _make_locations_segments_with_buffer(self):
-        # TODO: this assumes that features are sampled at the same rate as the signal
         # subselect signal leaving out a buffer at beginning and end
         # leave out first and last chunk to allow left-right shift
-        middle_slice = slice(self.len_overlap_samples, -self.len_overlap_samples)
-        signal_middle = self.signal[middle_slice]
-        indices_middle = np.arange(
-            self.len_overlap_samples,
-            self.signal.shape[0] - self.len_overlap_samples
-            )
+        # TODO: this preprocessing should be extracted, and number of segments should take it into account
+        signal_middle, indices_middle = self._extract_usable_signal()
+
+        # TODO: above we are discarding the edges, but split array will also discard stuff...
         # for locations, keep only the initial index
         segment_locations = split_array(indices_middle, self.len_segment_samples)[:, 0]
         signal_segments = split_array(signal_middle, self.len_segment_samples)
         return segment_locations, signal_segments
+
+    def _extract_usable_signal(self):
+        # leave a buffer at the edges of the signal and return middle
+        # can we perfectly tile the signal with segments of the desired length?
+        remainder = (self.signal.shape[0] - 2*self.len_overlap_samples) % self.len_segment_samples
+        # distribute remainder over left and right edges
+        if remainder % 2 == 0:
+            edge_buffer_left = edge_buffer_right = self.len_overlap_samples + remainder//2
+        else:
+            edge_buffer_left = self.len_overlap_samples + remainder//2
+            edge_buffer_right = self.len_overlap_samples + remainder//2 + 1
+
+        middle_slice = slice(edge_buffer_left, -edge_buffer_right)
+        signal_middle = self.signal[middle_slice]
+        indices_middle = np.arange(edge_buffer_left, self.signal.shape[0] - edge_buffer_right)
+        return signal_middle, indices_middle
 
     def _make_features_from_signal_segments(self):
         feature_segments = []
@@ -322,7 +346,8 @@ class SoundQuilter():
 
     def _compute_num_quilt_segments(self):
         # rounds up (a warning will be raised if it overflows requested segment length)
-        return int(np.ceil(self.len_quilt_samples / self.len_segment_samples))
+        # TODO: check if round or ceil is more appropriate
+        return int(np.round(self.len_quilt_samples / self.len_segment_samples))
 
 
 def overlap_add(segments, len_overlap, window):
@@ -422,12 +447,12 @@ def split_array(array, len_subarrays):
     """
 
     remainder = array.shape[-1] % len_subarrays
-    if remainder > 0:  # TODO: this may be redundant with leaving out overlap to the sides of signal
-        warnings.warn(UserWarning(
+    if remainder > 0:
+        raise Exception(
             f"Signal length ({array.shape[-1]}) is not divisible "
             f"by segment length ({len_subarrays}). "
-            f"Trailing samples discarded: {remainder}"
-            ))
+            f"Remainder: {remainder}"
+            )
         array = array[..., 0:-remainder]  # discard excess samples in last dimension
     # calculate number of segments, given length of segments
     num_segments = array.shape[-1] // len_subarrays

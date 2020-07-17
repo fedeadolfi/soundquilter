@@ -11,11 +11,12 @@ PATH_TO_REF_ARRAYS = "ref/"
 
 
 def test_split_array():
+    # should work only when signal size evenly divisible by segment length
     signal = np.ones([30, 50])
-    len_segment_samples = 3
+    len_segment_samples = 5
     segments = qtr.split_array(signal, len_segment_samples)
     assert segments.shape[0] == signal.shape[-1] // len_segment_samples
-    assert segments[0].shape == (30, 3)
+    assert segments[0].shape == (30, 5)
 
 
 def test_make_window():
@@ -92,13 +93,16 @@ def test_sound_quilter():
     if srate_loaded != srate:  # if different sampling rate, resample
         signal = resample_poly(signal, srate, srate_loaded, axis=0)
 
+    # TODO: delte the following line
+    # signal = signal[0:4800]
+
     quilter = qtr.SoundQuilter()
     config = {
         # Attributes set by the user
         "srate": srate,
         "len_segment_samples": 2400,
         "len_overlap_samples": 600,
-        "len_quilt_samples": 2400 * 15,  # int(srate * 4.0),
+        "len_quilt_samples": 2400 * 6,  # int(srate * 4.0),
         "len_feature_border_samples": 300,  # defines the extent to use for distance calculation
         # "_distance_metric": None,  # should work with broadcasting
         # for selecting via maximizing cross-correlation (PSOLA),

@@ -204,7 +204,7 @@ class SoundQuilter():
                 )
         # Collect warnings
         remainder_quilt_len = self.len_quilt_samples % self.len_segment_samples
-        if  remainder_quilt_len != 0:
+        if remainder_quilt_len != 0:
             warning_strings.append(
                 f"Length of quilt requested ({self.len_quilt_samples}) is not divisible by "
                 f"length of segments ({self.len_segment_samples}). "
@@ -313,10 +313,12 @@ class SoundQuilter():
     def _build_index_sequence_similar_distance(self):
         # makes a sequence of segment indices based on maintaining
         #   a similar distances to original transitions
-        sequence = find_sequence_similar_diagonal(
-            self._distance_matrix, self._num_quilt_segments
-            ) + 1  # add one to reflect segment index rather than transition index
-        return sequence
+        num_transitions = self._num_quilt_segments - 1
+        sequence = [i + 1 for i in find_sequence_similar_diagonal(
+            self._distance_matrix, num_transitions
+            )]  # add one to reflect segment index rather than transition index
+        sequence.insert(0, sequence[0] - 1)  # add first element
+        return np.array(sequence)
 
     def _compute_num_quilt_segments(self):
         # rounds up (a warning will be raised if it overflows requested segment length)
@@ -375,7 +377,7 @@ def find_optimal_location(vector, candidates):
     return best_location
 
 
-def find_sequence_similar_diagonal(distance_matrix, len_sequence):
+def find_sequence_similar_diagonal(distance_matrix, num_transitions):
     """
     Finds a sequence of indices with the closest element transitions to the ones
     appearing in the diagonal of the distance matrix.
@@ -385,7 +387,7 @@ def find_sequence_similar_diagonal(distance_matrix, len_sequence):
     choice = np.random.choice(indices, size=1)[0]  # choose randomly only first time
     index_sequence = [choice]
 
-    for i in range(0, len_sequence-1):  # first item already determined randomly above
+    for i in range(0, num_transitions - 1):  # -1 because first item already determined randomly above
         element_nr = index_sequence[-1]
         original_distance = distance_matrix[element_nr, element_nr]
 
@@ -397,7 +399,7 @@ def find_sequence_similar_diagonal(distance_matrix, len_sequence):
         index_sequence.append(choice)
 
     # choice is (index that minimizes distance) + 1 because distance 0 is among 0 and 1
-    return np.array(index_sequence)
+    return index_sequence
 
 
 def make_window(len_sides, len_middle):

@@ -1,13 +1,14 @@
 import numpy as np
-from sound_quilter import quilter as qtr
+from soundquilter import quilter as qtr
 import pytest
 
 # TODO: how to test houskeeping methods in the app
 SHOW = False
 PLAY = False
 
-# PATH_TO_REF_ARRAYS = "sound_quilter/tests/ref/"
+# PATH_TO_REF_ARRAYS = "soundquilter/tests/ref/"
 PATH_TO_REF_ARRAYS = "ref/"
+
 
 def test_split_array():
     signal = np.ones([30, 50])
@@ -25,6 +26,7 @@ def test_make_window():
     len_middle = len_segment_samples - len_overlap_samples
     window = qtr.make_window(len_sides, len_middle)
     assert (window == window_reference).all()
+
 
 def test_compute_distances():
     # TODO: test with borders where the 2 arrays compared are not the same
@@ -45,7 +47,7 @@ def test_find_sequence_similar_diagonal():
     distance_matrix = np.arange(1, 101).reshape([10, 10]).astype(np.float)
     len_sequence = 6
     index_sequence = qtr.find_sequence_similar_diagonal(distance_matrix, len_sequence)
-    assert index_sequence.shape[0] == len_sequence
+    assert len(index_sequence) == len_sequence
 
 
 def test_find_optimal_location():

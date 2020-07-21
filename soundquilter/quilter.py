@@ -24,6 +24,7 @@ import warnings
 #       - Shift boundaries of the segment forward or backwards at most 15 ms to
 #           maximize cross-correlation between the *waveforms* of adjacent segments
 #       - Cross-fade between segments using 30-ms raised cosine ramps centered at boundary
+# TODO: test sorting part by fixing random seed and giving a source signal with ground truth order
 
 # TODO: test_sound_quilter is a smoke test, not a unit test. If I run it alongside
 #   all the other tests, it will give 100% coverage because it is running
@@ -439,7 +440,7 @@ def make_window(len_sides, len_middle):
     return window
 
 
-def split_array(array, len_subarrays):
+def split_array(array, len_subarrays, strict=True):
     """
     Splits an array into segments of desired length, along its last dimension.
     Discards remainder at the end if signal length is not divisible by segment length.
@@ -447,13 +448,19 @@ def split_array(array, len_subarrays):
     """
 
     remainder = array.shape[-1] % len_subarrays
-    if remainder > 0:
+    if remainder > 0 and strict:
         raise Exception(
             f"Signal length ({array.shape[-1]}) is not divisible "
             f"by segment length ({len_subarrays}). "
             f"Remainder: {remainder}"
             )
+    elif not strict:
         array = array[..., 0:-remainder]  # discard excess samples in last dimension
+        warnings.warn(UserWarning(
+            f"Signal length ({array.shape[-1]}) is not divisible "
+            f"by segment length ({len_subarrays}). "
+            f"{remainder} samples have been discarded."
+            ))
     # calculate number of segments, given length of segments
     num_segments = array.shape[-1] // len_subarrays
     segments = np.split(array, indices_or_sections=num_segments, axis=-1)

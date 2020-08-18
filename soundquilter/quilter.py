@@ -444,7 +444,8 @@ def split_array(array, len_subarrays, strict=True):
     """
     Splits an array into segments of desired length, along its last dimension.
     Discards remainder at the end if signal length is not divisible by segment length.
-    Returned shape is (num_subarrays, array.shape)
+    Returned shape is (num_subarrays, array.shape).
+    The operation of split_array is reversed by np.concatenate(segments, axis=-1)
     """
 
     remainder = array.shape[-1] % len_subarrays
@@ -454,7 +455,7 @@ def split_array(array, len_subarrays, strict=True):
             f"by segment length ({len_subarrays}). "
             f"Remainder: {remainder}"
             )
-    elif not strict:
+    elif remainder > 0 and not strict:
         array = array[..., 0:-remainder]  # discard excess samples in last dimension
         warnings.warn(UserWarning(
             f"Signal length ({array.shape[-1]}) is not divisible "
@@ -479,6 +480,7 @@ def compute_distances(arrays, arrays_2=None, metric="sqerror"):
         "euclidean": euclidean_distance_matrix,
         "cosine": cosine_similarity_matrix,
         "sqerror": squared_error_matrix,
+        "random": random_distance_matrix,
         }
     if type(metric) is str:
         if metric not in metrics_options.keys():
@@ -548,5 +550,8 @@ def euclidean_distance_matrix(x, y):
 def squared_error_matrix(x, y):
     return np.sum((x[..., np.newaxis] - y.T) ** 2, axis=1)
 
+
+def random_distance_matrix(x, y):
+    return np.random.rand(x.shape[0], x.shape[0])
 
 

@@ -348,7 +348,7 @@ class SoundQuilter():
     def _compute_num_quilt_segments(self):
         # rounds up (a warning will be raised if it overflows requested segment length)
         # TODO: check if round or ceil is more appropriate
-        return int(np.round(self.len_quilt_samples / self.len_segment_samples))
+        return int(np.ceil(self.len_quilt_samples / self.len_segment_samples))
 
 
 def overlap_add(segments, len_overlap, window):
